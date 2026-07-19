@@ -6,6 +6,8 @@ export default defineConfig({
     // sequentially to keep table state deterministic.
     fileParallelism: false,
     include: ["test/**/*.test.ts"],
+    setupFiles: ["test/setup-env.ts"],
+    globalSetup: ["test/global-setup.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },
