@@ -14,9 +14,9 @@ afterAll(async () => {
 
 describe("pricing", () => {
   it("returns pricing for a known model", () => {
-    expect(getPricing("openai", "gpt-4o-mini")).toEqual({
-      inPerMTok: 0.15,
-      outPerMTok: 0.6,
+    expect(getPricing("openai", "gpt-5.6-luna")).toEqual({
+      inPerMTok: 1,
+      outPerMTok: 6,
     });
   });
 
@@ -61,9 +61,9 @@ describe("runAgentStep (mock adapter)", () => {
 
   it("writes a model_usage row with correct cost math", async () => {
     const testId = `mock-${randomUUID()}`;
-    // gpt-4o: $2.50/MTok in, $10/MTok out.
+    // gpt-5.6-terra: $2.50/MTok in, $15/MTok out.
     const out = await runAgentStep(
-      { provider: "openai", model: "gpt-4o" },
+      { provider: "openai", model: "gpt-5.6-terra" },
       { messages: [{ role: "user", content: "hi" }] },
       {
         adapters: { openai: mockAdapter(1000, 2000, "hello") },
@@ -80,11 +80,11 @@ describe("runAgentStep (mock adapter)", () => {
     expect(rows.length).toBe(1);
     const row = rows[0]!;
     expect(row.provider).toBe("openai");
-    expect(row.model).toBe("gpt-4o");
+    expect(row.model).toBe("gpt-5.6-terra");
     expect(row.inputTokens).toBe(1000);
     expect(row.outputTokens).toBe(2000);
-    // 1000/1e6*2.5 + 2000/1e6*10 = 0.0025 + 0.02 = 0.0225
-    expect(Number(row.costUsd)).toBeCloseTo(0.0225, 9);
+    // 1000/1e6*2.5 + 2000/1e6*15 = 0.0025 + 0.03 = 0.0325
+    expect(Number(row.costUsd)).toBeCloseTo(0.0325, 9);
   });
 });
 
@@ -95,8 +95,12 @@ const LIVE: Array<{ provider: Provider; model: string; keyEnv: string }> = [
     model: "claude-haiku-4-5",
     keyEnv: "ANTHROPIC_API_KEY",
   },
-  { provider: "gemini", model: "gemini-2.0-flash", keyEnv: "GEMINI_API_KEY" },
-  { provider: "openai", model: "gpt-4o-mini", keyEnv: "OPENAI_API_KEY" },
+  {
+    provider: "gemini",
+    model: "gemini-3.1-flash-lite-preview",
+    keyEnv: "GEMINI_API_KEY",
+  },
+  { provider: "openai", model: "gpt-5.6-luna", keyEnv: "OPENAI_API_KEY" },
 ];
 
 describe("runAgentStep (live, env-gated)", () => {
