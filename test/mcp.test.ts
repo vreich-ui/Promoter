@@ -114,6 +114,7 @@ describe("MCP tools", () => {
       const names = tools.map((t) => t.name).sort();
       expect(names).toEqual(
         [
+          "agent_step_test",
           "campaign_create",
           "campaign_get",
           "opportunity_create",

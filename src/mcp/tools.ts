@@ -5,9 +5,11 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getDb, pingDb } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { NotFoundError, toWireError } from "../lib/errors.js";
+import { runAgentStep } from "../agents/index.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
+const PROVIDERS = ["anthropic", "gemini", "openai"] as const;
 
 const DEFAULT_SOURCE = "mcp";
 
@@ -277,5 +279,34 @@ export function registerTools(server: McpServer): void {
         .returning();
       return row;
     }),
+  );
+
+  // ---- agent adapter seam (manual smoke) ----
+  server.registerTool(
+    "agent_step_test",
+    {
+      title: "Agent step (smoke test)",
+      description:
+        "Run one non-streaming completion through the provider adapter seam, recording usage/cost.",
+      inputSchema: {
+        provider: z.enum(PROVIDERS),
+        model: z.string().min(1),
+        prompt: z.string().min(1),
+        system: z.string().optional(),
+        maxTokens: z.number().int().positive().max(4096).optional(),
+      },
+    },
+    safe(async (args) =>
+      runAgentStep(
+        {
+          provider: args.provider,
+          model: args.model,
+          system: args.system,
+          maxTokens: args.maxTokens,
+        },
+        { messages: [{ role: "user", content: args.prompt }] },
+        { source: "agent_step_test" },
+      ),
+    ),
   );
 }
