@@ -1,0 +1,21 @@
+# Local development dependencies. Brings up Postgres 16 for the promoter
+# service to connect to via DATABASE_URL.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: promoter
+      POSTGRES_PASSWORD: promoter
+      POSTGRES_DB: promoter
+    ports:
+      - "5432:5432"
+    volumes:
+      - promoter_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promoter -d promoter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  promoter_pgdata:
