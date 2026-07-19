@@ -27,6 +27,8 @@ ENV GIT_SHA=${GIT_SHA}
 COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+# Migrations, applied at deploy time via `node dist/db/migrate.js`.
+COPY drizzle ./drizzle
 
 EXPOSE 8080
 USER node

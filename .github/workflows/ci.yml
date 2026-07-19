@@ -9,7 +9,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: promoter
+          POSTGRES_PASSWORD: promoter
+          POSTGRES_DB: promoter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U promoter -d promoter"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
+      DATABASE_URL: postgres://promoter:promoter@localhost:5432/promoter
       PROMOTER_MCP_KEY: test-key
 
     steps:
@@ -30,6 +46,9 @@ jobs:
 
       - name: Format check
         run: npm run format:check
+
+      - name: Migrate
+        run: npm run db:migrate
 
       - name: Test
         run: npm test
