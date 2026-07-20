@@ -1,12 +1,14 @@
 import { z } from "zod";
-import { eq, desc, gte, sql } from "drizzle-orm";
+import { and, eq, desc, gte, sql } from "drizzle-orm";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getDb, pingDb } from "../db/client.js";
 import * as schema from "../db/schema.js";
-import { NotFoundError, toWireError } from "../lib/errors.js";
+import { NotFoundError, ValidationError, toWireError } from "../lib/errors.js";
 import { runAgentStep } from "../agents/index.js";
 import { ingestEvents } from "../herd/ingest.js";
+import { publishPolicy, getActivePolicy } from "../db/policies.js";
+import { enrollContact } from "../sequences/engine.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
@@ -245,15 +247,7 @@ export function registerTools(server: McpServer): void {
       description: "Return the highest-version policy for a kind, or null.",
       inputSchema: { kind: z.string().min(1) },
     },
-    safe(async (args) => {
-      const [row] = await getDb()
-        .select()
-        .from(schema.policyVersion)
-        .where(eq(schema.policyVersion.kind, args.kind))
-        .orderBy(desc(schema.policyVersion.version))
-        .limit(1);
-      return row ?? null;
-    }),
+    safe(async (args) => getActivePolicy(args.kind)),
   );
 
   server.registerTool(
@@ -268,18 +262,9 @@ export function registerTools(server: McpServer): void {
         source: z.string().min(1).optional(),
       },
     },
-    safe(async (args) => {
-      const [row] = await getDb()
-        .insert(schema.policyVersion)
-        .values({
-          source: args.source ?? DEFAULT_SOURCE,
-          kind: args.kind,
-          body: args.body,
-          version: sql<number>`coalesce((select max(${schema.policyVersion.version}) from ${schema.policyVersion} where ${schema.policyVersion.kind} = ${args.kind}), 0) + 1`,
-        })
-        .returning();
-      return row;
-    }),
+    safe(async (args) =>
+      publishPolicy(args.kind, args.body, args.source ?? DEFAULT_SOURCE),
+    ),
   );
 
   // ---- agent adapter seam (manual smoke) ----
@@ -543,6 +528,109 @@ export function registerTools(server: McpServer): void {
         eventsLast7d: events7d?.count ?? 0,
         segments: segments?.count ?? 0,
       };
+    }),
+  );
+
+  // ---- deadlines + sequences (P2) ----
+  server.registerTool(
+    "deadline_create",
+    {
+      title: "Create deadline",
+      description:
+        "Register a real deadline. Countdown claims and sends bind to these rows; no row, no scarcity.",
+      inputSchema: {
+        name: z.string().min(1).max(200),
+        expiresAt: z.coerce.date(),
+        ext: z.record(z.unknown()).optional(),
+      },
+    },
+    safe(async (args) => {
+      const [existing] = await getDb()
+        .select({ id: schema.deadline.id })
+        .from(schema.deadline)
+        .where(eq(schema.deadline.name, args.name))
+        .limit(1);
+      if (existing)
+        throw new ValidationError(`Deadline ${args.name} already exists`);
+      const [row] = await getDb()
+        .insert(schema.deadline)
+        .values({
+          source: DEFAULT_SOURCE,
+          name: args.name,
+          expiresAt: args.expiresAt,
+          ext: args.ext,
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "deadline_get",
+    {
+      title: "Get deadline",
+      description:
+        "Fetch a deadline by name with its live expired state, or null.",
+      inputSchema: { name: z.string().min(1) },
+    },
+    safe(async (args) => {
+      const [row] = await getDb()
+        .select()
+        .from(schema.deadline)
+        .where(eq(schema.deadline.name, args.name))
+        .limit(1);
+      if (!row) return null;
+      return { ...row, expired: row.expiresAt <= new Date() };
+    }),
+  );
+
+  server.registerTool(
+    "sequence_enroll",
+    {
+      title: "Enroll in sequence",
+      description:
+        "Enroll a contact in the active version of a follow-up sequence (kind `sequence:<name>`).",
+      inputSchema: {
+        contactId: z.string().uuid(),
+        kind: z.string().min(1),
+      },
+    },
+    safe(async (args) =>
+      enrollContact(args.contactId, args.kind, DEFAULT_SOURCE),
+    ),
+  );
+
+  server.registerTool(
+    "sequence_states",
+    {
+      title: "List sequence states",
+      description:
+        "List sequence enrollments, filterable by kind, contact, or status.",
+      inputSchema: {
+        kind: z.string().optional(),
+        contactId: z.string().uuid().optional(),
+        status: z
+          .enum(["active", "completed", "paused", "cancelled"])
+          .optional(),
+        limit: z.number().int().positive().max(500).default(50),
+      },
+    },
+    safe(async (args) => {
+      const conditions = [
+        args.kind
+          ? eq(schema.sequenceState.sequenceKind, args.kind)
+          : undefined,
+        args.contactId
+          ? eq(schema.sequenceState.contactId, args.contactId)
+          : undefined,
+        args.status ? eq(schema.sequenceState.status, args.status) : undefined,
+      ].filter((c) => c !== undefined);
+      return getDb()
+        .select()
+        .from(schema.sequenceState)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(schema.sequenceState.createdAt))
+        .limit(args.limit);
     }),
   );
 }

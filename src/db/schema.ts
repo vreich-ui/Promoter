@@ -9,6 +9,7 @@ import {
   numeric,
   index,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -251,6 +252,82 @@ export const segmentMember = pgTable(
   (t) => [unique("segment_member_uq").on(t.segmentId, t.contactId)],
 );
 
+/**
+ * A contact's position in a follow-up sequence. The sequence definition is a
+ * policy_version row (kind `sequence:<name>`); `policyVersion` pins the exact
+ * version at enrollment for provenance. Only one active enrollment per
+ * contact per sequence (partial unique index).
+ */
+export const sequenceState = pgTable(
+  "sequence_state",
+  {
+    ...commonColumns(),
+    contactId: uuid("contact_id")
+      .notNull()
+      .references(() => contact.id),
+    sequenceKind: text("sequence_kind").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    stepIndex: integer("step_index").notNull().default(0),
+    // active | completed | paused | cancelled
+    status: text("status").notNull().default("active"),
+    reason: text("reason"),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("sequence_state_due_idx").on(t.status, t.nextRunAt),
+    index("sequence_state_contact_idx").on(t.contactId),
+    uniqueIndex("sequence_state_active_uq")
+      .on(t.contactId, t.sequenceKind)
+      .where(sql`status = 'active'`),
+  ],
+);
+
+/**
+ * Real scarcity: a countdown or urgency claim may only exist when it binds to
+ * a row here, and sends are blocked once `expiresAt` passes (hard rule #1 in
+ * docs/ROADMAP.md).
+ */
+export const deadline = pgTable(
+  "deadline",
+  {
+    ...commonColumns(),
+    name: text("name").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [unique("deadline_name_uq").on(t.name)],
+);
+
+/**
+ * Ledger of every send attempt — including blocked ones, so consent and
+ * deadline gating is auditable. Append-only (trigger in migrations).
+ */
+export const sendLog = pgTable(
+  "send_log",
+  {
+    ...commonColumns(),
+    contactId: uuid("contact_id")
+      .notNull()
+      .references(() => contact.id),
+    sequenceStateId: uuid("sequence_state_id").references(
+      () => sequenceState.id,
+    ),
+    sequenceKind: text("sequence_kind"),
+    channel: text("channel").notNull(),
+    // sent | blocked_consent | blocked_deadline | failed
+    status: text("status").notNull(),
+    reason: text("reason"),
+    payload: jsonb("payload")
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+  },
+  (t) => [
+    index("send_log_contact_idx").on(t.contactId),
+    index("send_log_created_at_idx").on(t.createdAt),
+    index("send_log_kind_idx").on(t.sequenceKind),
+  ],
+);
+
 /** Cost/usage ledger for provider model calls. */
 export const modelUsage = pgTable("model_usage", {
   ...commonColumns(),
@@ -289,3 +366,9 @@ export type Segment = typeof segment.$inferSelect;
 export type NewSegment = typeof segment.$inferInsert;
 export type SegmentMember = typeof segmentMember.$inferSelect;
 export type NewSegmentMember = typeof segmentMember.$inferInsert;
+export type SequenceState = typeof sequenceState.$inferSelect;
+export type NewSequenceState = typeof sequenceState.$inferInsert;
+export type Deadline = typeof deadline.$inferSelect;
+export type NewDeadline = typeof deadline.$inferInsert;
+export type SendLog = typeof sendLog.$inferSelect;
+export type NewSendLog = typeof sendLog.$inferInsert;

@@ -119,6 +119,8 @@ describe("MCP tools", () => {
           "campaign_get",
           "contact_upsert",
           "consent_set",
+          "deadline_create",
+          "deadline_get",
           "event_ingest",
           "herd_overview",
           "opportunity_create",
@@ -130,6 +132,8 @@ describe("MCP tools", () => {
           "segment_add_member",
           "segment_create",
           "segment_list",
+          "sequence_enroll",
+          "sequence_states",
           "signal_create",
           "signal_list",
         ].sort(),
@@ -312,6 +316,55 @@ describe("MCP tools", () => {
       expect(overview.contacts).toBeGreaterThan(0);
       expect(overview.eventsLast7d).toBeGreaterThan(0);
       expect(overview.emailConsentGranted).toBeGreaterThan(0);
+
+      // deadlines: create -> get (live) -> duplicate rejected
+      const dlName = `mcp-dl-${randomUUID()}`;
+      const dl = readJson(
+        await call(client, "deadline_create", {
+          name: dlName,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      ) as { name: string };
+      expect(dl.name).toBe(dlName);
+      const gotDl = readJson(
+        await call(client, "deadline_get", { name: dlName }),
+      ) as {
+        expired: boolean;
+      };
+      expect(gotDl.expired).toBe(false);
+      const dupDl = await call(client, "deadline_create", {
+        name: dlName,
+        expiresAt: new Date().toISOString(),
+      });
+      expect(dupDl.isError).toBe(true);
+
+      // sequences: publish -> enroll -> states
+      const seqName = `mcp-${randomUUID().slice(0, 8)}`;
+      const seqKind = `sequence:${seqName}`;
+      readJson(
+        await call(client, "policy_publish", {
+          kind: seqKind,
+          body: {
+            name: seqName,
+            channel: "email",
+            steps: [{ delayHours: 1, body: "Hello {{name}}" }],
+          },
+        }),
+      );
+      const enrolled = readJson(
+        await call(client, "sequence_enroll", {
+          contactId: contact.id,
+          kind: seqKind,
+        }),
+      ) as { status: string; policyVersion: number };
+      expect(enrolled.status).toBe("active");
+      expect(enrolled.policyVersion).toBe(1);
+
+      const states = readJson(
+        await call(client, "sequence_states", { kind: seqKind, limit: 10 }),
+      ) as Array<{ contactId: string }>;
+      expect(states.length).toBe(1);
+      expect(states[0]!.contactId).toBe(contact.id);
     } finally {
       await client.close();
     }
