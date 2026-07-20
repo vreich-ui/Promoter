@@ -117,12 +117,19 @@ describe("MCP tools", () => {
           "agent_step_test",
           "campaign_create",
           "campaign_get",
+          "contact_upsert",
+          "consent_set",
+          "event_ingest",
+          "herd_overview",
           "opportunity_create",
           "opportunity_get",
           "opportunity_list",
           "ping",
           "policy_get_active",
           "policy_publish",
+          "segment_add_member",
+          "segment_create",
+          "segment_list",
           "signal_create",
           "signal_list",
         ].sort(),
@@ -241,6 +248,70 @@ describe("MCP tools", () => {
       // input validation: signal_create requires `raw`
       const bad = await call(client, "signal_create", { source: "x" });
       expect(bad.isError).toBe(true);
+
+      // herd: upsert -> consent -> event_ingest -> segment -> overview
+      const email = `mcp-herd-${randomUUID()}@Example.com`;
+      const contact = readJson(
+        await call(client, "contact_upsert", { email, name: "Test" }),
+      ) as { id: string; email: string };
+      expect(contact.email).toBe(email.toLowerCase());
+
+      // Upsert same email again updates instead of duplicating.
+      const again = readJson(
+        await call(client, "contact_upsert", { email, name: "Renamed" }),
+      ) as { id: string; name: string };
+      expect(again.id).toBe(contact.id);
+      expect(again.name).toBe("Renamed");
+
+      const consent = readJson(
+        await call(client, "consent_set", {
+          contactId: contact.id,
+          channel: "email",
+          status: "granted",
+        }),
+      ) as { status: string };
+      expect(consent.status).toBe("granted");
+
+      const ingest = readJson(
+        await call(client, "event_ingest", {
+          events: [
+            {
+              type: "purchase",
+              contactId: contact.id,
+              payload: { valueUsd: 42 },
+            },
+          ],
+        }),
+      ) as { ingested: number; recomputed: number };
+      expect(ingest.ingested).toBe(1);
+      expect(ingest.recomputed).toBe(1);
+
+      const seg = readJson(
+        await call(client, "segment_create", { name: `seg-${randomUUID()}` }),
+      ) as { id: string };
+      readJson(
+        await call(client, "segment_add_member", {
+          segmentId: seg.id,
+          contactId: contact.id,
+        }),
+      );
+      const segments = readJson(
+        await call(client, "segment_list", { limit: 200 }),
+      ) as Array<{
+        id: string;
+        memberCount: number;
+      }>;
+      const mine = segments.find((s) => s.id === seg.id);
+      expect(mine?.memberCount).toBe(1);
+
+      const overview = readJson(await call(client, "herd_overview", {})) as {
+        contacts: number;
+        eventsLast7d: number;
+        emailConsentGranted: number;
+      };
+      expect(overview.contacts).toBeGreaterThan(0);
+      expect(overview.eventsLast7d).toBeGreaterThan(0);
+      expect(overview.emailConsentGranted).toBeGreaterThan(0);
     } finally {
       await client.close();
     }

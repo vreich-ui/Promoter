@@ -6,6 +6,7 @@ import { getDb, pingDb } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { NotFoundError, toWireError } from "../lib/errors.js";
 import { runAgentStep } from "../agents/index.js";
+import { ingestEvents } from "../herd/ingest.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
@@ -308,5 +309,240 @@ export function registerTools(server: McpServer): void {
         { source: "agent_step_test" },
       ),
     ),
+  );
+
+  // ---- herd (P1) ----
+  server.registerTool(
+    "contact_upsert",
+    {
+      title: "Upsert contact",
+      description: "Create or update a contact by email (stored lowercased).",
+      inputSchema: {
+        email: z.string().email(),
+        name: z.string().optional(),
+        attributes: z.record(z.unknown()).optional(),
+        source: z.string().min(1).optional(),
+        ext: z.record(z.unknown()).optional(),
+      },
+    },
+    safe(async (args) => {
+      const email = args.email.trim().toLowerCase();
+      const [row] = await getDb()
+        .insert(schema.contact)
+        .values({
+          source: args.source ?? DEFAULT_SOURCE,
+          email,
+          name: args.name,
+          attributes: args.attributes,
+          ext: args.ext,
+        })
+        .onConflictDoUpdate({
+          target: schema.contact.email,
+          set: {
+            ...(args.name !== undefined ? { name: args.name } : {}),
+            ...(args.attributes !== undefined
+              ? { attributes: args.attributes }
+              : {}),
+          },
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "consent_set",
+    {
+      title: "Set consent",
+      description: "Grant or revoke a contact's consent for a channel.",
+      inputSchema: {
+        contactId: z.string().uuid(),
+        channel: z.enum(["email", "sms", "mail", "ads"]),
+        status: z.enum(["granted", "revoked"]),
+        evidence: z.record(z.unknown()).optional(),
+      },
+    },
+    safe(async (args) => {
+      const now = new Date();
+      const stamps =
+        args.status === "granted"
+          ? { grantedAt: now, revokedAt: null }
+          : { revokedAt: now };
+      const [row] = await getDb()
+        .insert(schema.consent)
+        .values({
+          source: DEFAULT_SOURCE,
+          contactId: args.contactId,
+          channel: args.channel,
+          status: args.status,
+          evidence: args.evidence,
+          ...stamps,
+        })
+        .onConflictDoUpdate({
+          target: [schema.consent.contactId, schema.consent.channel],
+          set: {
+            status: args.status,
+            ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
+            ...stamps,
+          },
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "event_ingest",
+    {
+      title: "Ingest events",
+      description:
+        "Append behavioral events (server-side path); recomputes RFM/ladder on commerce events.",
+      inputSchema: {
+        events: z
+          .array(
+            z.object({
+              type: z.string().min(1).max(64),
+              trackingCode: z.string().min(1).max(128).optional(),
+              email: z.string().email().optional(),
+              contactId: z.string().uuid().optional(),
+              payload: z.record(z.unknown()).default({}),
+              occurredAt: z.coerce.date().optional(),
+            }),
+          )
+          .min(1)
+          .max(100),
+      },
+    },
+    safe(async (args) => ingestEvents(args.events, DEFAULT_SOURCE)),
+  );
+
+  server.registerTool(
+    "segment_create",
+    {
+      title: "Create segment",
+      description:
+        "Create a named herd segment with an optional rule definition.",
+      inputSchema: {
+        name: z.string().min(1).max(200),
+        definition: z.record(z.unknown()).optional(),
+        source: z.string().min(1).optional(),
+      },
+    },
+    safe(async (args) => {
+      const [row] = await getDb()
+        .insert(schema.segment)
+        .values({
+          source: args.source ?? DEFAULT_SOURCE,
+          name: args.name,
+          definition: args.definition,
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "segment_add_member",
+    {
+      title: "Add segment member",
+      description: "Add a contact to a segment (idempotent).",
+      inputSchema: {
+        segmentId: z.string().uuid(),
+        contactId: z.string().uuid(),
+      },
+    },
+    safe(async (args) => {
+      const [row] = await getDb()
+        .insert(schema.segmentMember)
+        .values({
+          source: DEFAULT_SOURCE,
+          segmentId: args.segmentId,
+          contactId: args.contactId,
+        })
+        .onConflictDoNothing()
+        .returning();
+      return (
+        row ?? {
+          segmentId: args.segmentId,
+          contactId: args.contactId,
+          existing: true,
+        }
+      );
+    }),
+  );
+
+  server.registerTool(
+    "segment_list",
+    {
+      title: "List segments",
+      description: "List segments with member counts.",
+      inputSchema: {
+        limit: z.number().int().positive().max(500).default(50),
+      },
+    },
+    safe(async (args) =>
+      getDb()
+        .select({
+          id: schema.segment.id,
+          name: schema.segment.name,
+          definition: schema.segment.definition,
+          createdAt: schema.segment.createdAt,
+          memberCount: sql<number>`count(${schema.segmentMember.id})::int`,
+        })
+        .from(schema.segment)
+        .leftJoin(
+          schema.segmentMember,
+          eq(schema.segmentMember.segmentId, schema.segment.id),
+        )
+        .groupBy(schema.segment.id)
+        .orderBy(desc(schema.segment.createdAt))
+        .limit(args.limit),
+    ),
+  );
+
+  server.registerTool(
+    "herd_overview",
+    {
+      title: "Herd overview",
+      description:
+        "L0 summary of the list: contacts by ladder stage, consent coverage, recent event volume.",
+      inputSchema: {},
+    },
+    safe(async () => {
+      const db = getDb();
+      const [totals] = await db
+        .select({ contacts: sql<number>`count(*)::int` })
+        .from(schema.contact);
+      const byStage = await db
+        .select({
+          stage: schema.contact.ladderStage,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.contact)
+        .groupBy(schema.contact.ladderStage);
+      const [consented] = await db
+        .select({ emailGranted: sql<number>`count(*)::int` })
+        .from(schema.consent)
+        .where(
+          sql`${schema.consent.channel} = 'email' and ${schema.consent.status} = 'granted'`,
+        );
+      const [events7d] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.event)
+        .where(sql`${schema.event.occurredAt} > now() - interval '7 days'`);
+      const [segments] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.segment);
+
+      return {
+        contacts: totals?.contacts ?? 0,
+        byLadderStage: Object.fromEntries(
+          byStage.map((r) => [r.stage, r.count]),
+        ),
+        emailConsentGranted: consented?.emailGranted ?? 0,
+        eventsLast7d: events7d?.count ?? 0,
+        segments: segments?.count ?? 0,
+      };
+    }),
   );
 }

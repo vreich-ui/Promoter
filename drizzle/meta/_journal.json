@@ -15,6 +15,20 @@
       "when": 1784466970451,
       "tag": "0001_append_only_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784533913552,
+      "tag": "0002_lively_kronos",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784533914619,
+      "tag": "0003_event_append_only",
+      "breakpoints": true
     }
   ]
 }
