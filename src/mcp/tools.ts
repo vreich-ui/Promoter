@@ -27,8 +27,11 @@ import {
 import {
   materializePersuasionProfiles,
   listLessons,
+  listPendingApprovals,
+  decideApproval,
 } from "../persuasion/ledger.js";
 import { runWarRoom } from "../persuasion/warroom.js";
+import { getOverview } from "../read/overview.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
@@ -913,6 +916,48 @@ export function registerTools(server: McpServer): void {
       runWarRoom(
         args.autonomy !== undefined ? { autonomy: args.autonomy } : {},
       ),
+    ),
+  );
+
+  // ---- read surface for Bridge (P5) ----
+  server.registerTool(
+    "promoter_overview",
+    {
+      title: "Promoter overview",
+      description:
+        "L0 cockpit summary: herd, opportunities by status, active experiments, due sequences, pending approvals, recent lessons.",
+      inputSchema: {},
+    },
+    safe(async () => getOverview()),
+  );
+
+  server.registerTool(
+    "approvals_list",
+    {
+      title: "List pending approvals",
+      description:
+        "Flag-mode approval queue: proposed actions awaiting a decision.",
+      inputSchema: {
+        limit: z.number().int().positive().max(500).default(50),
+      },
+    },
+    safe(async (args) => listPendingApprovals(args.limit)),
+  );
+
+  server.registerTool(
+    "approval_decide",
+    {
+      title: "Decide approval",
+      description:
+        "Approve or reject a proposed action. Writes an immutable decision lesson referencing the proposal.",
+      inputSchema: {
+        lessonId: z.string().uuid(),
+        decision: z.enum(["approve", "reject"]),
+        note: z.string().max(2000).optional(),
+      },
+    },
+    safe(async (args) =>
+      decideApproval(args.lessonId, args.decision, args.note, DEFAULT_SOURCE),
     ),
   );
 }

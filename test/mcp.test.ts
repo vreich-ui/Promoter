@@ -115,6 +115,8 @@ describe("MCP tools", () => {
       expect(names).toEqual(
         [
           "agent_step_test",
+          "approval_decide",
+          "approvals_list",
           "assignment_get",
           "campaign_create",
           "campaign_get",
@@ -138,6 +140,7 @@ describe("MCP tools", () => {
           "placement_create",
           "policy_get_active",
           "policy_publish",
+          "promoter_overview",
           "segment_add_member",
           "segment_create",
           "segment_list",
@@ -516,6 +519,37 @@ describe("MCP tools", () => {
         }),
       ) as Array<{ id: string }>;
       expect(lessons.some((l) => l.id === warReport.reportLessonId)).toBe(true);
+
+      // read surface: overview + approval queue round-trip
+      const cockpit = readJson(await call(client, "promoter_overview", {})) as {
+        herd: { contacts: number };
+        pendingApprovals: number;
+        opportunitiesByStatus: Record<string, number>;
+      };
+      expect(cockpit.herd.contacts).toBeGreaterThan(0);
+      expect(typeof cockpit.pendingApprovals).toBe("number");
+
+      const pending = readJson(
+        await call(client, "approvals_list", { limit: 100 }),
+      ) as Array<{ id: string; kind: string }>;
+      if (pending.length > 0) {
+        const decision = readJson(
+          await call(client, "approval_decide", {
+            lessonId: pending[0]!.id,
+            decision: "approve",
+            note: "looks good",
+          }),
+        ) as { kind: string; subject: { ref: string } };
+        expect(decision.kind).toBe("action_applied");
+        expect(decision.subject.ref).toBe(pending[0]!.id);
+
+        // Deciding the same proposal again is rejected.
+        const dup = await call(client, "approval_decide", {
+          lessonId: pending[0]!.id,
+          decision: "approve",
+        });
+        expect(dup.isError).toBe(true);
+      }
     } finally {
       await client.close();
     }

@@ -1,6 +1,7 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import * as schema from "../db/schema.js";
+import { NotFoundError, ValidationError } from "../lib/errors.js";
 import {
   materializeProfiles,
   type ExposureRow,
@@ -113,4 +114,93 @@ export async function rescorableOpportunities(): Promise<schema.Opportunity[]> {
         sql`jsonb_array_length(${schema.opportunity.offerRefs}) > 0`,
       ),
     );
+}
+
+/** Kinds that record a decision on a proposed action (carry `subject.ref`). */
+const DECISION_KINDS = ["action_applied", "action_rejected"] as const;
+
+/**
+ * Flag-mode approval queue: `action_proposed` lessons that no decision lesson
+ * (`action_applied`/`action_rejected` carrying `subject.ref = <id>`) has
+ * resolved yet. Auto-mode `action_applied` rows carry no `ref`, so they never
+ * look like decisions of a proposal.
+ */
+export async function listPendingApprovals(
+  limit = 50,
+): Promise<schema.Lesson[]> {
+  return getDb()
+    .select()
+    .from(schema.lesson)
+    .where(
+      and(
+        eq(schema.lesson.kind, "action_proposed"),
+        sql`not exists (
+          select 1 from ${schema.lesson} d
+          where d.kind in ('action_applied', 'action_rejected')
+            and d.subject->>'ref' = ${schema.lesson.id}::text
+        )`,
+      ),
+    )
+    .orderBy(desc(schema.lesson.createdAt))
+    .limit(limit);
+}
+
+/** Count of open approvals — the L0 badge. */
+export async function countPendingApprovals(): Promise<number> {
+  const [row] = await getDb()
+    .select({ count: sql<number>`count(*)::int` })
+    .from(schema.lesson)
+    .where(
+      and(
+        eq(schema.lesson.kind, "action_proposed"),
+        sql`not exists (
+          select 1 from ${schema.lesson} d
+          where d.kind in ('action_applied', 'action_rejected')
+            and d.subject->>'ref' = ${schema.lesson.id}::text
+        )`,
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+/**
+ * Resolve one proposed action. Writes an immutable decision lesson
+ * (`action_applied` on approve, `action_rejected` on reject) that references
+ * the proposal via `subject.ref`. Idempotent guard: a proposal already decided
+ * is not decided again.
+ */
+export async function decideApproval(
+  lessonId: string,
+  decision: "approve" | "reject",
+  note: string | undefined,
+  source: string,
+): Promise<schema.Lesson> {
+  const db = getDb();
+  const [proposal] = await db
+    .select()
+    .from(schema.lesson)
+    .where(eq(schema.lesson.id, lessonId))
+    .limit(1);
+  if (!proposal || proposal.kind !== "action_proposed") {
+    throw new NotFoundError(`no pending approval ${lessonId}`);
+  }
+  const [already] = await db
+    .select({ id: schema.lesson.id })
+    .from(schema.lesson)
+    .where(
+      and(
+        inArray(schema.lesson.kind, [...DECISION_KINDS]),
+        sql`${schema.lesson.subject}->>'ref' = ${lessonId}`,
+      ),
+    )
+    .limit(1);
+  if (already) {
+    throw new ValidationError(`approval ${lessonId} was already decided`);
+  }
+  return writeLesson(
+    decision === "approve" ? "action_applied" : "action_rejected",
+    { ...proposal.subject, ref: lessonId },
+    { decision, note: note ?? null, decidedFrom: proposal.body },
+    source,
+  );
 }
