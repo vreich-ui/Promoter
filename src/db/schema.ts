@@ -328,6 +328,86 @@ export const sendLog = pgTable(
   ],
 );
 
+/**
+ * A live test. Traffic is allocated across variants by Thompson sampling;
+ * a slice of contacts (`holdoutRatio`) is carved out and never assigned a
+ * variant, so incrementality stays measurable.
+ */
+export const experiment = pgTable("experiment", {
+  ...commonColumns(),
+  campaignId: uuid("campaign_id").references(() => campaign.id),
+  name: text("name").notNull(),
+  // active | paused | concluded
+  status: text("status").notNull().default("active"),
+  holdoutRatio: numeric("holdout_ratio").notNull().default("0.1"),
+});
+
+/** One arm of an experiment. `payload` describes what the variant is. */
+export const variant = pgTable(
+  "variant",
+  {
+    ...commonColumns(),
+    experimentId: uuid("experiment_id")
+      .notNull()
+      .references(() => experiment.id),
+    name: text("name").notNull(),
+    payload: jsonb("payload")
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+  },
+  (t) => [unique("variant_experiment_name_uq").on(t.experimentId, t.name)],
+);
+
+/**
+ * Sticky assignment of an identity (contact or anonymous visitor token) to a
+ * variant — or to the holdout (`isHoldout`, variantId null). One assignment
+ * per identity per experiment; holdout membership is permanent for the
+ * experiment's life.
+ */
+export const assignment = pgTable(
+  "assignment",
+  {
+    ...commonColumns(),
+    experimentId: uuid("experiment_id")
+      .notNull()
+      .references(() => experiment.id),
+    variantId: uuid("variant_id").references(() => variant.id),
+    contactId: uuid("contact_id").references(() => contact.id),
+    visitorToken: text("visitor_token"),
+    isHoldout: integer("is_holdout").notNull().default(0),
+    converted: integer("converted").notNull().default(0),
+    convertedAt: timestamp("converted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("assignment_experiment_idx").on(t.experimentId),
+    uniqueIndex("assignment_contact_uq")
+      .on(t.experimentId, t.contactId)
+      .where(sql`contact_id is not null`),
+    uniqueIndex("assignment_token_uq")
+      .on(t.experimentId, t.visitorToken)
+      .where(sql`visitor_token is not null`),
+  ],
+);
+
+/**
+ * A presentation of a Monetizer offer: price frame, guarantee, bonus stack,
+ * and (optionally) a bound deadline from the deadline registry. The offer is
+ * the #1 lever — these are what experiments mutate.
+ */
+export const offerVariant = pgTable("offer_variant", {
+  ...commonColumns(),
+  offerRef: text("offer_ref").notNull(),
+  priceFrame: text("price_frame"),
+  guarantee: text("guarantee"),
+  bonusStack: jsonb("bonus_stack")
+    .notNull()
+    .$type<unknown[]>()
+    .default(sql`'[]'::jsonb`),
+  // Name of a `deadline` row; real scarcity only.
+  deadlineName: text("deadline_name"),
+});
+
 /** Cost/usage ledger for provider model calls. */
 export const modelUsage = pgTable("model_usage", {
   ...commonColumns(),
@@ -372,3 +452,11 @@ export type Deadline = typeof deadline.$inferSelect;
 export type NewDeadline = typeof deadline.$inferInsert;
 export type SendLog = typeof sendLog.$inferSelect;
 export type NewSendLog = typeof sendLog.$inferInsert;
+export type Experiment = typeof experiment.$inferSelect;
+export type NewExperiment = typeof experiment.$inferInsert;
+export type Variant = typeof variant.$inferSelect;
+export type NewVariant = typeof variant.$inferInsert;
+export type Assignment = typeof assignment.$inferSelect;
+export type NewAssignment = typeof assignment.$inferInsert;
+export type OfferVariant = typeof offerVariant.$inferSelect;
+export type NewOfferVariant = typeof offerVariant.$inferInsert;

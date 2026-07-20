@@ -60,6 +60,17 @@ export class PricingError extends PromoterError {
   }
 }
 
+/**
+ * No economics entry exists for an offer ref. Never falls back — same
+ * doctrine as {@link PricingError}: unknown numbers are refused, not guessed.
+ */
+export class EconomicsError extends PromoterError {
+  constructor(message: string) {
+    super("economics_error", message);
+    this.name = "EconomicsError";
+  }
+}
+
 /** Narrow an unknown thrown value to a wire-safe `{ code, message }`. */
 export function toWireError(err: unknown): { code: string; message: string } {
   if (err instanceof PromoterError) return err.toWire();

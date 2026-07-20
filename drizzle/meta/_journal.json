@@ -43,6 +43,13 @@
       "when": 1784534651807,
       "tag": "0005_send_log_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784536003959,
+      "tag": "0006_windy_madelyne_pryor",
+      "breakpoints": true
     }
   ]
 }
