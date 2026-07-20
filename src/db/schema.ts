@@ -408,6 +408,36 @@ export const offerVariant = pgTable("offer_variant", {
   deadlineName: text("deadline_name"),
 });
 
+/**
+ * Append-only store of what the machine learned. War-room runs and retros
+ * write immutable rows here — an observation, a rotation recommendation, a
+ * reallocation, a drafted or applied action, or a run summary. Nothing is
+ * ever updated; a lesson that is later acted on gets a new row that references
+ * it (a BEFORE UPDATE OR DELETE trigger enforces this).
+ */
+export const lesson = pgTable(
+  "lesson",
+  {
+    ...commonColumns(),
+    // observation | rotation | reallocation | action_proposed |
+    // action_applied | war_room_report
+    kind: text("kind").notNull(),
+    // { tactic?, segment?, channel?, experimentId?, campaignId?, ref? }
+    subject: jsonb("subject")
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+    body: jsonb("body")
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+  },
+  (t) => [
+    index("lesson_kind_idx").on(t.kind),
+    index("lesson_created_at_idx").on(t.createdAt),
+  ],
+);
+
 /** Cost/usage ledger for provider model calls. */
 export const modelUsage = pgTable("model_usage", {
   ...commonColumns(),
@@ -460,3 +490,5 @@ export type Assignment = typeof assignment.$inferSelect;
 export type NewAssignment = typeof assignment.$inferInsert;
 export type OfferVariant = typeof offerVariant.$inferSelect;
 export type NewOfferVariant = typeof offerVariant.$inferInsert;
+export type Lesson = typeof lesson.$inferSelect;
+export type NewLesson = typeof lesson.$inferInsert;

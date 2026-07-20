@@ -127,12 +127,15 @@ describe("MCP tools", () => {
           "experiment_create",
           "experiment_report",
           "herd_overview",
+          "lesson_list",
           "offer_variant_create",
           "opportunity_create",
           "opportunity_get",
           "opportunity_list",
           "opportunity_score_economics",
+          "persuasion_profile",
           "ping",
+          "placement_create",
           "policy_get_active",
           "policy_publish",
           "segment_add_member",
@@ -142,6 +145,8 @@ describe("MCP tools", () => {
           "sequence_states",
           "signal_create",
           "signal_list",
+          "tactics_publish",
+          "warroom_run",
         ].sort(),
       );
 
@@ -466,6 +471,51 @@ describe("MCP tools", () => {
       expect(scored.opportunity.scoreBreakdown.economics.totalMarginUsd).toBe(
         30,
       );
+
+      // persuasion: publish taxonomy -> placement stamps tactics -> profile -> warroom -> lessons
+      const tactics = readJson(await call(client, "tactics_publish", {})) as {
+        kind: string;
+        version: number;
+      };
+      expect(tactics.kind).toBe("tactics");
+      expect(tactics.version).toBeGreaterThan(0);
+
+      // Unknown tactic is rejected at the data layer.
+      const badPlacement = await call(client, "placement_create", {
+        campaignId: camp.id,
+        channel: "email",
+        tactics: ["not_a_real_tactic"],
+      });
+      expect(badPlacement.isError).toBe(true);
+
+      const placement = readJson(
+        await call(client, "placement_create", {
+          campaignId: camp.id,
+          channel: "email",
+          tactics: ["social_proof", "authority"],
+          segment: "core",
+        }),
+      ) as { id: string; ext: { tactics: string[]; segment: string } };
+      expect(placement.ext.tactics).toEqual(["social_proof", "authority"]);
+      expect(placement.ext.segment).toBe("core");
+
+      const profiles = readJson(
+        await call(client, "persuasion_profile", { limit: 10 }),
+      ) as Array<{ tactic: string }>;
+      expect(Array.isArray(profiles)).toBe(true);
+
+      const warReport = readJson(
+        await call(client, "warroom_run", { autonomy: "flag" }),
+      ) as { reportLessonId: string; profileCells: number };
+      expect(warReport.reportLessonId).toBeTruthy();
+
+      const lessons = readJson(
+        await call(client, "lesson_list", {
+          kind: "war_room_report",
+          limit: 5,
+        }),
+      ) as Array<{ id: string }>;
+      expect(lessons.some((l) => l.id === warReport.reportLessonId)).toBe(true);
     } finally {
       await client.close();
     }

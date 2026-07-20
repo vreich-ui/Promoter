@@ -1,8 +1,10 @@
 import { PgBoss } from "pg-boss";
 import { getDatabaseUrl } from "../lib/env.js";
 import { runTick } from "./tick.js";
+import { runWarRoom } from "../persuasion/warroom.js";
 
 const TICK_QUEUE = "promoter-tick";
+const WARROOM_QUEUE = "promoter-warroom";
 
 /**
  * pg-boss wiring on the existing Postgres (its own `pgboss` schema): a
@@ -25,5 +27,17 @@ export async function startScheduler(): Promise<PgBoss> {
     console.log(`[tick] ${report.ranAt} ${advanced || "idle"}`);
   });
   await boss.schedule(TICK_QUEUE, "* * * * *");
+
+  // Nightly war room: ingest -> rescore -> retro -> reallocate -> draft.
+  if ((await boss.getQueue(WARROOM_QUEUE)) === null) {
+    await boss.createQueue(WARROOM_QUEUE);
+  }
+  await boss.work(WARROOM_QUEUE, async () => {
+    const report = await runWarRoom();
+    console.log(
+      `[warroom] ${report.ranAt} profiles=${report.profileCells} rotations=${report.rotations} realloc=${report.reallocations} actions=${report.actionsDrafted}`,
+    );
+  });
+  await boss.schedule(WARROOM_QUEUE, "0 3 * * *");
   return boss;
 }

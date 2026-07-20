@@ -50,6 +50,20 @@
       "when": 1784536003959,
       "tag": "0006_windy_madelyne_pryor",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784545961885,
+      "tag": "0007_dazzling_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784545961886,
+      "tag": "0008_lesson_append_only",
+      "breakpoints": true
     }
   ]
 }
