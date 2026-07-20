@@ -115,6 +115,7 @@ describe("MCP tools", () => {
       expect(names).toEqual(
         [
           "agent_step_test",
+          "assignment_get",
           "campaign_create",
           "campaign_get",
           "contact_upsert",
@@ -122,10 +123,15 @@ describe("MCP tools", () => {
           "deadline_create",
           "deadline_get",
           "event_ingest",
+          "experiment_convert",
+          "experiment_create",
+          "experiment_report",
           "herd_overview",
+          "offer_variant_create",
           "opportunity_create",
           "opportunity_get",
           "opportunity_list",
+          "opportunity_score_economics",
           "ping",
           "policy_get_active",
           "policy_publish",
@@ -365,6 +371,101 @@ describe("MCP tools", () => {
       ) as Array<{ contactId: string }>;
       expect(states.length).toBe(1);
       expect(states[0]!.contactId).toBe(contact.id);
+
+      // offer lab: experiment_create -> assignment_get (sticky) -> convert -> report
+      const exp = readJson(
+        await call(client, "experiment_create", {
+          name: `mcp-exp-${randomUUID()}`,
+          holdoutRatio: 0,
+          variants: [{ name: "A" }, { name: "B", payload: { price: 49 } }],
+        }),
+      ) as {
+        experiment: { id: string; holdoutRatio: string };
+        variants: Array<{ id: string; name: string }>;
+      };
+      expect(exp.variants.length).toBe(2);
+      expect(exp.experiment.holdoutRatio).toBe("0");
+
+      const token = `visitor-${randomUUID()}`;
+      const a1 = readJson(
+        await call(client, "assignment_get", {
+          experimentId: exp.experiment.id,
+          visitorToken: token,
+        }),
+      ) as {
+        assignment: { id: string; variantId: string; isHoldout: number };
+        variant: { id: string } | null;
+        existing: boolean;
+      };
+      expect(a1.existing).toBe(false);
+      expect(a1.assignment.isHoldout).toBe(0);
+      expect(a1.variant).not.toBeNull();
+
+      // Sticky: same identity returns the same assignment.
+      const a2 = readJson(
+        await call(client, "assignment_get", {
+          experimentId: exp.experiment.id,
+          visitorToken: token,
+        }),
+      ) as { assignment: { id: string }; existing: boolean };
+      expect(a2.existing).toBe(true);
+      expect(a2.assignment.id).toBe(a1.assignment.id);
+
+      const converted = readJson(
+        await call(client, "experiment_convert", {
+          experimentId: exp.experiment.id,
+          visitorToken: token,
+        }),
+      ) as { converted: number };
+      expect(converted.converted).toBe(1);
+
+      const report = readJson(
+        await call(client, "experiment_report", {
+          experimentId: exp.experiment.id,
+          draws: 500,
+        }),
+      ) as {
+        variants: Array<{ assigned: number; converted: number }>;
+        holdout: { assigned: number };
+        totalAssigned: number;
+      };
+      expect(report.totalAssigned).toBe(1);
+      expect(report.holdout.assigned).toBe(0);
+      expect(report.variants.reduce((s, v) => s + v.converted, 0)).toBe(1);
+
+      // economics: unknown offer -> typed error (no fallback); known -> folds in.
+      const offerRef = `offer-${randomUUID()}`;
+      const oppEcon = readJson(
+        await call(client, "opportunity_create", {
+          signalIds: [signal.id],
+          offerRefs: [offerRef],
+        }),
+      ) as { id: string };
+
+      const unpriced = await call(client, "opportunity_score_economics", {
+        opportunityId: oppEcon.id,
+      });
+      expect(unpriced.isError).toBe(true);
+      const econErr = readJson(unpriced) as { code: string };
+      expect(econErr.code).toBe("economics_error");
+
+      const scored = readJson(
+        await call(client, "opportunity_score_economics", {
+          opportunityId: oppEcon.id,
+          economics: { [offerRef]: { marginUsd: 30, ltvUsd: 120 } },
+        }),
+      ) as {
+        totalMarginUsd: number;
+        totalLtvUsd: number;
+        opportunity: {
+          scoreBreakdown: { economics: { totalMarginUsd: number } };
+        };
+      };
+      expect(scored.totalMarginUsd).toBe(30);
+      expect(scored.totalLtvUsd).toBe(120);
+      expect(scored.opportunity.scoreBreakdown.economics.totalMarginUsd).toBe(
+        30,
+      );
     } finally {
       await client.close();
     }

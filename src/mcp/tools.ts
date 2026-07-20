@@ -9,6 +9,17 @@ import { runAgentStep } from "../agents/index.js";
 import { ingestEvents } from "../herd/ingest.js";
 import { publishPolicy, getActivePolicy } from "../db/policies.js";
 import { enrollContact } from "../sequences/engine.js";
+import {
+  createExperiment,
+  getOrCreateAssignment,
+  recordConversion,
+  experimentReport,
+  type Identity,
+} from "../offers/allocator.js";
+import {
+  scoreOpportunityEconomics,
+  inlineEconomicsSource,
+} from "../offers/economics.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
@@ -633,4 +644,167 @@ export function registerTools(server: McpServer): void {
         .limit(args.limit);
     }),
   );
+
+  // ---- offer lab (P3) ----
+  server.registerTool(
+    "experiment_create",
+    {
+      title: "Create experiment",
+      description:
+        "Create an experiment with variants. Traffic is Thompson-sampled across variants; a deterministic holdout slice (holdoutRatio) is never assigned.",
+      inputSchema: {
+        name: z.string().min(1).max(200),
+        campaignId: z.string().uuid().optional(),
+        holdoutRatio: z.number().min(0).max(0.9).optional(),
+        variants: z
+          .array(
+            z.object({
+              name: z.string().min(1).max(200),
+              payload: z.record(z.unknown()).optional(),
+            }),
+          )
+          .min(2),
+        source: z.string().min(1).optional(),
+      },
+    },
+    safe(async (args) =>
+      createExperiment(
+        {
+          name: args.name,
+          campaignId: args.campaignId,
+          holdoutRatio: args.holdoutRatio,
+          variants: args.variants,
+        },
+        args.source ?? DEFAULT_SOURCE,
+      ),
+    ),
+  );
+
+  server.registerTool(
+    "offer_variant_create",
+    {
+      title: "Create offer variant",
+      description:
+        "Register a presentation of a Monetizer offer (price frame, guarantee, bonus stack, bound deadline). These are what experiments mutate.",
+      inputSchema: {
+        offerRef: z.string().min(1).max(200),
+        priceFrame: z.string().optional(),
+        guarantee: z.string().optional(),
+        bonusStack: z.array(z.unknown()).optional(),
+        deadlineName: z.string().optional(),
+        source: z.string().min(1).optional(),
+        ext: z.record(z.unknown()).optional(),
+      },
+    },
+    safe(async (args) => {
+      const [row] = await getDb()
+        .insert(schema.offerVariant)
+        .values({
+          source: args.source ?? DEFAULT_SOURCE,
+          offerRef: args.offerRef,
+          priceFrame: args.priceFrame,
+          guarantee: args.guarantee,
+          bonusStack: args.bonusStack,
+          deadlineName: args.deadlineName,
+          ext: args.ext,
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "assignment_get",
+    {
+      title: "Get assignment",
+      description:
+        "Sticky variant assignment for an identity (contactId or visitorToken). CMS calls this at render. Holdout identities return variant: null and are never given a variant.",
+      inputSchema: {
+        experimentId: z.string().uuid(),
+        contactId: z.string().uuid().optional(),
+        visitorToken: z.string().min(1).max(200).optional(),
+        source: z.string().min(1).optional(),
+      },
+    },
+    safe(async (args) =>
+      getOrCreateAssignment(
+        args.experimentId,
+        identityFrom(args),
+        args.source ?? DEFAULT_SOURCE,
+      ),
+    ),
+  );
+
+  server.registerTool(
+    "experiment_convert",
+    {
+      title: "Record conversion",
+      description:
+        "Mark an identity's assignment converted (idempotent). Holdout conversions are recorded too — they are the incrementality baseline.",
+      inputSchema: {
+        experimentId: z.string().uuid(),
+        contactId: z.string().uuid().optional(),
+        visitorToken: z.string().min(1).max(200).optional(),
+      },
+    },
+    safe(async (args) =>
+      recordConversion(args.experimentId, identityFrom(args)),
+    ),
+  );
+
+  server.registerTool(
+    "experiment_report",
+    {
+      title: "Experiment report",
+      description:
+        "Per-variant assignment/conversion counts, posterior means, and win probabilities, plus the holdout baseline.",
+      inputSchema: {
+        experimentId: z.string().uuid(),
+        draws: z.number().int().positive().max(20000).optional(),
+      },
+    },
+    safe(async (args) =>
+      experimentReport(
+        args.experimentId,
+        args.draws !== undefined ? { draws: args.draws } : undefined,
+      ),
+    ),
+  );
+
+  server.registerTool(
+    "opportunity_score_economics",
+    {
+      title: "Score opportunity economics",
+      description:
+        "Fold Monetizer margin/LTV for an opportunity's offer refs into its score_breakdown. Unknown offer economics throw (no fallback). Pass `economics` inline (e.g. a live Monetizer read) or rely on registered economics.",
+      inputSchema: {
+        opportunityId: z.string().uuid(),
+        economics: z
+          .record(
+            z.object({
+              marginUsd: z.number(),
+              ltvUsd: z.number(),
+            }),
+          )
+          .optional(),
+      },
+    },
+    safe(async (args) =>
+      scoreOpportunityEconomics(
+        args.opportunityId,
+        inlineEconomicsSource(args.economics ?? {}),
+      ),
+    ),
+  );
+}
+
+/** Require exactly one identity (contactId or visitorToken) for assignment. */
+function identityFrom(args: {
+  contactId?: string | undefined;
+  visitorToken?: string | undefined;
+}): Identity {
+  if (!args.contactId && !args.visitorToken) {
+    throw new ValidationError("Provide a contactId or a visitorToken");
+  }
+  return { contactId: args.contactId, visitorToken: args.visitorToken };
 }
