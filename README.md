@@ -41,8 +41,9 @@ curl -s localhost:8080/health
 Migrations live in `./drizzle` and are generated from `src/db/schema.ts`.
 
 ```bash
-npm run db:generate   # regenerate SQL after editing the schema
-npm run db:migrate    # apply pending migrations (idempotent no-op if up to date)
+npm run db:generate     # regenerate SQL after editing the schema
+npm run db:migrate      # apply pending migrations (idempotent no-op if up to date)
+npm run seed:sequences  # publish the core follow-up sequences (idempotent)
 ```
 
 `db:migrate` runs `src/db/migrate.ts`, which applies every migration in order
@@ -84,3 +85,7 @@ DATABASE_URL="<cloud-sql-url>" npm run db:migrate
 
 Provider keys for the agent seam are set the same way when needed:
 `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`.
+
+Sequence ticks with min-instances 0: point Cloud Scheduler at
+`POST /jobs/tick` (header `X-Promoter-Key`) every minute. Always-on deploys
+can instead set `PROMOTER_SCHEDULER=pgboss` for the in-process cron.

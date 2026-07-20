@@ -20,7 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "seed:sequences": "tsx src/sequences/seeds.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
@@ -30,6 +31,7 @@
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.31",
     "openai": "^6.48.0",
+    "pg-boss": "^12.26.1",
     "postgres": "^3.4.9",
     "zod": "^3.25.76"
   },
