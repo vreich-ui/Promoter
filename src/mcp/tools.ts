@@ -20,6 +20,15 @@ import {
   scoreOpportunityEconomics,
   inlineEconomicsSource,
 } from "../offers/economics.js";
+import {
+  publishTacticTaxonomy,
+  assertKnownTactics,
+} from "../persuasion/tactics.js";
+import {
+  materializePersuasionProfiles,
+  listLessons,
+} from "../persuasion/ledger.js";
+import { runWarRoom } from "../persuasion/warroom.js";
 
 const STATUSES = ["new", "scored", "parked", "promoted", "rejected"] as const;
 const AUTONOMY = ["flag", "auto"] as const;
@@ -793,6 +802,116 @@ export function registerTools(server: McpServer): void {
       scoreOpportunityEconomics(
         args.opportunityId,
         inlineEconomicsSource(args.economics ?? {}),
+      ),
+    ),
+  );
+
+  // ---- persuasion ledger (P4) ----
+  server.registerTool(
+    "tactics_publish",
+    {
+      title: "Publish tactic taxonomy",
+      description:
+        "Publish the persuasion tactic taxonomy as a `tactics` policy (idempotent seed). Placements stamp these names into ext.tactics[].",
+      inputSchema: { source: z.string().min(1).optional() },
+    },
+    safe(async (args) => publishTacticTaxonomy(args.source ?? "seed")),
+  );
+
+  server.registerTool(
+    "placement_create",
+    {
+      title: "Create placement",
+      description:
+        "Create a channel placement for a campaign, stamping the persuasion tactics it uses into ext.tactics[] (validated against the taxonomy) and its target segment into ext.segment.",
+      inputSchema: {
+        campaignId: z.string().uuid(),
+        channel: z.string().min(1).max(64),
+        trackingCode: z.string().min(1).max(128).optional(),
+        tactics: z.array(z.string().min(1)).optional(),
+        segment: z.string().min(1).max(200).optional(),
+        tracking: z.record(z.unknown()).optional(),
+        status: z.string().min(1).max(64).optional(),
+        source: z.string().min(1).optional(),
+        ext: z.record(z.unknown()).optional(),
+      },
+    },
+    safe(async (args) => {
+      const tactics = args.tactics ?? [];
+      assertKnownTactics(tactics);
+      const ext: Record<string, unknown> = {
+        ...(args.ext ?? {}),
+        tactics,
+        ...(args.segment !== undefined ? { segment: args.segment } : {}),
+      };
+      const [row] = await getDb()
+        .insert(schema.placement)
+        .values({
+          source: args.source ?? DEFAULT_SOURCE,
+          campaignId: args.campaignId,
+          channel: args.channel,
+          trackingCode: args.trackingCode,
+          tracking: args.tracking,
+          status: args.status,
+          ext,
+        })
+        .returning();
+      return row;
+    }),
+  );
+
+  server.registerTool(
+    "persuasion_profile",
+    {
+      title: "Persuasion profiles",
+      description:
+        "Materialize tactic × segment × channel response rates from the outcome ledger, best first.",
+      inputSchema: {
+        tactic: z.string().optional(),
+        channel: z.string().optional(),
+        segment: z.string().optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+      },
+    },
+    safe(async (args) => {
+      const cells = await materializePersuasionProfiles();
+      const filtered = cells.filter(
+        (c) =>
+          (args.tactic === undefined || c.tactic === args.tactic) &&
+          (args.channel === undefined || c.channel === args.channel) &&
+          (args.segment === undefined || c.segment === args.segment),
+      );
+      return filtered.slice(0, args.limit ?? 100);
+    }),
+  );
+
+  server.registerTool(
+    "lesson_list",
+    {
+      title: "List lessons",
+      description:
+        "List append-only lessons (war-room output, retros, rotations), most recent first.",
+      inputSchema: {
+        kind: z.string().optional(),
+        limit: z.number().int().positive().max(500).optional(),
+      },
+    },
+    safe(async (args) => listLessons({ kind: args.kind, limit: args.limit })),
+  );
+
+  server.registerTool(
+    "warroom_run",
+    {
+      title: "Run war room",
+      description:
+        "Run one war-room pass: ingest profiles → rescore economics → detect habituated tactics → record experiment leaders → draft next actions. Emits a report lesson.",
+      inputSchema: {
+        autonomy: z.enum(["flag", "auto"]).optional(),
+      },
+    },
+    safe(async (args) =>
+      runWarRoom(
+        args.autonomy !== undefined ? { autonomy: args.autonomy } : {},
       ),
     ),
   );

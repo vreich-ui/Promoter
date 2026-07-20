@@ -21,7 +21,8 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "seed:sequences": "tsx src/sequences/seeds.ts"
+    "seed:sequences": "tsx src/sequences/seeds.ts",
+    "seed:tactics": "tsx src/persuasion/tactics.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
